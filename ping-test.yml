@@ -1,0 +1,13 @@
+---
+- name: Ping a host
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Ping host
+      ansible.builtin.ping:
+      register: ping_result
+
+    - name: Report ping result
+      ansible.builtin.debug:
+        msg: "Ping to {{ inventory_hostname }} was successful"
+      when: ping_result.ping == "pong"
