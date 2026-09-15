@@ -2,12 +2,16 @@
 - name: Ping a host
   hosts: all
   gather_facts: false
+  connection: ansible.netcommon.network_cli
+  vars:
+    ansible_network_os: cisco.ios.ios
   tasks:
-    - name: Ping host
-      ansible.builtin.ping:
+    - name: Verify IOS command access
+      cisco.ios.ios_command:
+        commands: show version
       register: ping_result
 
     - name: Report ping result
       ansible.builtin.debug:
         msg: "Ping to {{ inventory_hostname }} was successful"
-      when: ping_result.ping == "pong"
+      when: ping_result.stdout | length > 0
