@@ -1,0 +1,44 @@
+---
+- name: Validate Cisco IOS running configuration
+  hosts: all
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+  vars:
+    ansible_network_os: cisco.ios.ios
+    compliance_file: compliance.txt
+
+  tasks:
+    - name: Collect running configuration
+      cisco.ios.ios_command:
+        commands:
+          - show running-config
+      register: running_config
+      changed_when: false
+
+    - name: Load required configuration lines
+      ansible.builtin.set_fact:
+        required_config_lines: >-
+          {{ lookup('ansible.builtin.file', compliance_file).splitlines()
+             | map('trim')
+             | reject('equalto', '')
+             | reject('match', '^#')
+             | list }}
+        running_config_lines: >-
+          {{ running_config.stdout[0].splitlines()
+             | map('trim')
+             | reject('equalto', '')
+             | list }}
+
+    - name: Identify missing configuration lines
+      ansible.builtin.set_fact:
+        missing_config_lines: >-
+          {{ required_config_lines | difference(running_config_lines) }}
+
+    - name: Report configuration compliance
+      ansible.builtin.assert:
+        that:
+          - missing_config_lines | length == 0
+        success_msg: "{{ inventory_hostname }} is compliant"
+        fail_msg: >-
+          {{ inventory_hostname }} is not compliant. Missing commands:
+          {{ missing_config_lines | join(', ') }}
