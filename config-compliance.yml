@@ -5,6 +5,7 @@
   connection: ansible.netcommon.network_cli
   vars:
     ansible_network_os: cisco.ios.ios
+    ansible_network_cli_ssh_type: libssh
     compliance_file: compliance.txt
 
   tasks:
