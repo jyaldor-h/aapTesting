@@ -1,6 +1,6 @@
 ---
 - name: Validate Cisco IOS running configuration
-  hosts: all
+  hosts: tags_ios:tags_ios-xe
   gather_facts: false
   connection: ansible.netcommon.network_cli
   vars:

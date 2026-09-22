@@ -16,6 +16,8 @@ all:
 	hosts:
 		access-switch-01:
 			ansible_host: 192.0.2.10
+			netbox_tags:
+				- ios-xe
 			ansible_user: automation
 			ansible_password: "{{ vault_network_password }}"
 			ansible_become: true
@@ -29,6 +31,7 @@ Run the check with:
 ansible-playbook -i inventory.yml config-compliance.yml --ask-vault-pass
 ```
 
+Only hosts in the AAP inventory groups `tags_ios` or `tags_ios-xe` are checked.
 The play succeeds for compliant devices. For a noncompliant device, the failed
 assertion lists every required line that was not found.
 
