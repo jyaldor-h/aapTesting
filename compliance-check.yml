@@ -2,7 +2,6 @@
 - name: Validate cached Cisco IOS configuration against compliance policy
   hosts: tags_ios:tags_ios-xe:!tags_scanOmit
   gather_facts: false
-  connection: local
   vars:
     compliance_file: compliance.txt
 
