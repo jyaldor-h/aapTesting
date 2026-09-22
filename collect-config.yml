@@ -1,0 +1,25 @@
+---
+- name: Collect Cisco IOS running configuration
+  hosts: tags_ios:tags_ios-xe:!tags_scanOmit
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+  vars:
+    ansible_network_os: cisco.ios.ios
+    ansible_network_cli_ssh_type: libssh
+
+  tasks:
+    - name: Collect running configuration
+      cisco.ios.ios_command:
+        commands:
+          - show running-config
+      register: running_config
+      changed_when: false
+
+    - name: Cache running configuration for downstream compliance check
+      ansible.builtin.set_fact:
+        cacheable: true
+        running_config_lines: >-
+          {{ running_config.stdout[0].splitlines()
+             | map('trim')
+             | reject('equalto', '')
+             | list }}

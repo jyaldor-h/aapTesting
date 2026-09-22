@@ -1,0 +1,54 @@
+---
+- name: Validate cached Cisco IOS configuration against compliance policy
+  hosts: tags_ios:tags_ios-xe:!tags_scanOmit
+  gather_facts: false
+  connection: local
+  vars:
+    compliance_file: compliance.txt
+
+  tasks:
+    - name: Fail if no cached running configuration is available
+      ansible.builtin.assert:
+        that:
+          - running_config_lines is defined
+        fail_msg: >-
+          No cached running configuration found for {{ inventory_hostname }}.
+          The collect step did not run, did not complete, or the fact cache
+          has expired for this host.
+
+    - name: Load required configuration lines
+      ansible.builtin.set_fact:
+        required_config_lines: >-
+          {{ lookup('ansible.builtin.file', compliance_file).splitlines()
+             | map('trim')
+             | reject('equalto', '')
+             | reject('match', '^#')
+             | list }}
+
+    - name: Identify missing configuration lines
+      ansible.builtin.set_fact:
+        missing_config_lines: >-
+          {{ required_config_lines | difference(running_config_lines) }}
+
+    - name: Build structured compliance result
+      ansible.builtin.set_fact:
+        compliance_result:
+          host: "{{ inventory_hostname }}"
+          compliant: "{{ missing_config_lines | length == 0 }}"
+          missing_lines: "{{ missing_config_lines }}"
+
+    - name: Publish structured compliance result to AAP
+      ansible.builtin.set_stats:
+        data:
+          compliance_result: "{{ compliance_result }}"
+        per_host: true
+        aggregate: false
+
+    - name: Report configuration compliance
+      ansible.builtin.assert:
+        that:
+          - compliance_result.compliant
+        success_msg: "{{ inventory_hostname }} is compliant"
+        fail_msg: >-
+          {{ inventory_hostname }} is not compliant. Missing commands:
+          {{ missing_config_lines | join(', ') }}
