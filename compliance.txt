@@ -4,7 +4,6 @@ service password-encryption
 no ip http server
 no ip http secure-server
 ip domain name companynet.org
-no ip domain lookup
 vtp mode transparent
 spanning-tree portfast bpduguard default
 lldp run
