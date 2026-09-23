@@ -3,7 +3,3 @@
 service password-encryption
 no ip http server
 no ip http secure-server
-ip domain name companynet.org
-vtp mode transparent
-spanning-tree portfast bpduguard default
-lldp run
