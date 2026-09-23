@@ -1,0 +1,32 @@
+---
+- name: Tag NetBox devices based on compliance results
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    netbox_url: "{{ lookup('ansible.builtin.env', 'NETBOX_URL') }}"
+    netbox_token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+    netbox_validate_certs: true
+    compliant_tag: Compliant
+    not_compliant_tag: Not Compliant
+
+  tasks:
+    - name: Validate NetBox connection variables
+      ansible.builtin.assert:
+        that:
+          - netbox_url | length > 0
+          - netbox_token | length > 0
+        fail_msg: Set NETBOX_URL and NETBOX_TOKEN before running this playbook.
+
+    - name: Build list of scanned hosts
+      ansible.builtin.set_fact:
+        compliance_hosts: >-
+          {{ ((groups['tags_ios'] | default([])) + (groups['tags_ios-xe'] | default([])))
+             | unique
+             | difference(groups['tags_scanOmit'] | default([])) }}
+
+    - name: Apply compliance tags in NetBox
+      ansible.builtin.include_tasks: tasks/netbox-tag-host.yml
+      loop: "{{ compliance_hosts }}"
+      loop_control:
+        loop_var: target_host

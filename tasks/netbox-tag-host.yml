@@ -1,0 +1,20 @@
+---
+- name: Determine compliance state for {{ target_host }}
+  ansible.builtin.set_fact:
+    target_is_compliant: "{{ hostvars[target_host].compliance_result.compliant | default(false) }}"
+
+- name: Compute updated tag list for {{ target_host }}
+  ansible.builtin.set_fact:
+    target_updated_tags: >-
+      {{ (hostvars[target_host].netbox_tags | default([]) | difference(['not-compliant', 'compliant']))
+         + [ (compliant_tag if (target_is_compliant | bool) else not_compliant_tag) ] }}
+
+- name: Update NetBox compliance tag for {{ target_host }}
+  netbox.netbox.netbox_device:
+    netbox_url: "{{ netbox_url }}"
+    netbox_token: "{{ netbox_token }}"
+    validate_certs: "{{ netbox_validate_certs }}"
+    data:
+      name: "{{ target_host }}"
+      tags: "{{ target_updated_tags }}"
+    state: present

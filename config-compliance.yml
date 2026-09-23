@@ -42,13 +42,6 @@
           compliant: "{{ missing_config_lines | length == 0 }}"
           missing_lines: "{{ missing_config_lines }}"
 
-    - name: Publish structured compliance result to AAP
-      ansible.builtin.set_stats:
-        data:
-          compliance_result: "{{ compliance_result }}"
-        per_host: true
-        aggregate: false
-
     - name: Report configuration compliance
       ansible.builtin.assert:
         that:
@@ -57,3 +50,6 @@
         fail_msg: >-
           {{ inventory_hostname }} is not compliant. Missing commands:
           {{ missing_config_lines | join(', ') }}
+
+- name: Tag NetBox devices based on compliance results
+  ansible.builtin.import_playbook: netbox-tag-compliance.yml
