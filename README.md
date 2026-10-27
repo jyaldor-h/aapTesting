@@ -100,3 +100,61 @@ ansible-playbook -i inventory.yml netbox-sync.yml --ask-vault-pass
 The NetBox device name defaults to the Ansible `inventory_hostname`. Adjust the
 inventory hostnames or NetBox device names so they match the records you want to
 update.
+
+## Back up running configs to Git
+
+[`backup-config-git.yml`](backup-config-git.yml) collects `show running-config`
+from each host in `tags_ios` / `tags_ios-xe` (excluding `tags_scanOmit`), strips
+volatile lines (timestamps, byte counts, NTP clock-period), and commits one
+`configs/<inventory_hostname>.cfg` per device to a GitHub repo. All devices are
+committed together in a single commit by one localhost play, so concurrent
+forks never race on the push. If nothing changed, no commit is made. Hosts that
+fail collection are skipped and fail on the first play without touching the
+repo.
+
+In AAP, create a custom credential type that injects environment variables:
+
+```yaml
+# Input configuration
+fields:
+  - id: repo_url
+    type: string
+    label: Git repo URL (https)
+  - id: token
+    type: string
+    label: GitHub token (contents:write)
+    secret: true
+required: [repo_url, token]
+# Injector configuration
+env:
+  BACKUP_GIT_REPO_URL: "{{ repo_url }}"
+  BACKUP_GIT_TOKEN: "{{ token }}"
+```
+
+Attach that credential, plus the network credential, to a job template for
+`backup-config-git.yml`. The execution environment needs `git` 2.31+. The repo
+branch (`main` by default) must already exist; override `git_branch`,
+`git_backup_dir`, and the commit author via extra vars.
+
+## Interface and VLAN report
+
+[`interface-report.yml`](interface-report.yml) runs `show vlan brief`,
+`show interfaces status`, and `show interfaces` on each host in `tags_ios` /
+`tags_ios-xe` (excluding `tags_scanOmit`) and builds a read-only report:
+
+- **VLANs present**, with access-port and connected-port counts per VLAN.
+- **Every interface** with status, VLAN, speed/duplex, and a usage verdict:
+  `In use`, `Previously connected`, `Never connected`, or
+  `Unknown (no counters)`.
+
+For a port that is not connected, the playbook checks the counters in
+`show interfaces`. A port is `Previously connected` if it has any input or
+output packets or a "Last input/output" time other than `never`; otherwise it
+is `Never connected`. Counters reset on reload and on `clear counters`, so
+"never connected" means *not since the counters were last reset*; each row
+includes `counters_cleared` so you can judge how far back the history goes.
+
+Results are printed in the job output and published with `set_stats` as
+`interface_reports.<host>.{vlans,interfaces}` for later workflow nodes. Create
+a job template for the playbook with the network credential; no extra
+credentials or fact storage are needed.

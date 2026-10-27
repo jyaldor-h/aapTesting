@@ -1,0 +1,139 @@
+---
+- name: Cisco IOS interface and VLAN report
+  hosts: tags_ios:tags_ios-xe:!tags_scanOmit
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+  vars:
+    ansible_network_os: cisco.ios.ios
+    ansible_network_cli_ssh_type: libssh
+    ansible_command_timeout: 120
+
+  tasks:
+    - name: Collect VLAN and interface state
+      cisco.ios.ios_command:
+        commands:
+          - show vlan brief
+          - show interfaces status
+          - show interfaces
+      register: raw
+      changed_when: false
+
+    # "show vlan brief" rows look like "10   USERS   active   Gi1/0/1, Gi1/0/2".
+    # Continuation lines (more ports) are indented and don't match.
+    - name: Parse VLANs
+      ansible.builtin.set_fact:
+        vlans: |-
+          {%- set out = [] -%}
+          {%- for line in raw.stdout[0].splitlines() -%}
+          {%- set m = line | regex_findall('^(\d+)\s+(\S+)\s+(\S+)') -%}
+          {%- if m -%}
+          {%- set _ = out.append({'id': m[0][0], 'name': m[0][1], 'status': m[0][2]}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out | to_json }}
+
+    # Port, optional Name (may contain spaces), Status, Vlan, Duplex, Speed.
+    - name: Parse interface status
+      ansible.builtin.set_fact:
+        if_status: |-
+          {%- set out = [] -%}
+          {%- for line in raw.stdout[1].splitlines() -%}
+          {%- set m = line | regex_findall('^(\S+)\s+(?:(.*?)\s+)?(connected|notconnect|disabled|err-disabled|inactive|suspended|monitoring|sfp-config-mismatch|routed)\s+(\S+)\s+(\S+)\s+(\S+)') -%}
+          {%- if m -%}
+          {%- set _ = out.append({'port': m[0][0], 'name': m[0][1], 'status': m[0][2], 'vlan': m[0][3], 'duplex': m[0][4], 'speed': m[0][5]}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out | to_json }}
+
+    # Counter history from "show interfaces", keyed by the first two letters of
+    # the interface type plus its numbering, so Gi1/0/1 and GigabitEthernet1/0/1
+    # (or Po1 and Port-channel1) resolve to the same key.
+    - name: Parse interface counters
+      ansible.builtin.set_fact:
+        if_counters: |-
+          {%- set ns = namespace(cur=none) -%}
+          {%- set out = {} -%}
+          {%- for line in raw.stdout[2].splitlines() -%}
+          {%- set h = line | regex_findall('^([A-Za-z-]+)(\d\S*) is ') -%}
+          {%- if h -%}
+          {%- set ns.cur = (h[0][0][:2] | lower) ~ h[0][1] -%}
+          {%- set _ = out.update({ns.cur: {'in_pkts': 0, 'out_pkts': 0, 'last_input': 'unknown', 'last_output': 'unknown', 'cleared': 'never'}}) -%}
+          {%- elif ns.cur -%}
+          {%- set li = line | regex_findall('Last input (\S+), output (\S+),') -%}
+          {%- if li -%}{%- set _ = out[ns.cur].update({'last_input': li[0][0], 'last_output': li[0][1]}) -%}{%- endif -%}
+          {%- set ip = line | regex_findall('(\d+) packets input') -%}
+          {%- if ip -%}{%- set _ = out[ns.cur].update({'in_pkts': ip[0] | int}) -%}{%- endif -%}
+          {%- set op = line | regex_findall('(\d+) packets output') -%}
+          {%- if op -%}{%- set _ = out[ns.cur].update({'out_pkts': op[0] | int}) -%}{%- endif -%}
+          {%- set lc = line | regex_findall('Last clearing of "show interface" counters (.+)') -%}
+          {%- if lc -%}{%- set _ = out[ns.cur].update({'cleared': lc[0]}) -%}{%- endif -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out | to_json }}
+
+    # A port that is not connected counts as "previously connected" if any
+    # traffic was counted or last input/output is not "never". Counters reset on
+    # reload or "clear counters", so "never connected" really means "not since
+    # the counters were last reset" (see counters_cleared).
+    - name: Build per-interface report
+      ansible.builtin.set_fact:
+        interface_report: |-
+          {%- set out = [] -%}
+          {%- for p in if_status -%}
+          {%- set key = (p.port[:2] | lower) ~ (p.port | regex_replace('^[A-Za-z-]+', '')) -%}
+          {%- set c = if_counters[key] | default({'in_pkts': 0, 'out_pkts': 0, 'last_input': 'unknown', 'last_output': 'unknown', 'cleared': 'unknown'}) -%}
+          {%- set seen = c.in_pkts > 0 or c.out_pkts > 0 or c.last_input not in ['never', 'unknown'] or c.last_output not in ['never', 'unknown'] -%}
+          {%- if p.status == 'connected' -%}
+          {%- set usage = 'In use' -%}
+          {%- elif c.last_input == 'unknown' -%}
+          {%- set usage = 'Unknown (no counters)' -%}
+          {%- elif seen -%}
+          {%- set usage = 'Previously connected' -%}
+          {%- else -%}
+          {%- set usage = 'Never connected' -%}
+          {%- endif -%}
+          {%- set _ = out.append({'host': inventory_hostname, 'port': p.port, 'description': p.name, 'status': p.status, 'vlan': p.vlan, 'duplex': p.duplex, 'speed': p.speed, 'usage': usage, 'in_pkts': c.in_pkts, 'out_pkts': c.out_pkts, 'last_input': c.last_input, 'last_output': c.last_output, 'counters_cleared': c.cleared}) -%}
+          {%- endfor -%}
+          {{ out | to_json }}
+
+    - name: Build per-VLAN summary
+      ansible.builtin.set_fact:
+        vlan_report: |-
+          {%- set out = [] -%}
+          {%- for v in vlans -%}
+          {%- set ports = interface_report | selectattr('vlan', 'equalto', v.id) | list -%}
+          {%- set _ = out.append({'vlan': v.id, 'name': v.name, 'status': v.status, 'access_ports': ports | length, 'connected_ports': ports | selectattr('status', 'equalto', 'connected') | list | length}) -%}
+          {%- endfor -%}
+          {{ out | to_json }}
+
+    - name: Summarize report
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "VLANs: {{ vlans | length }}"
+          - "Interfaces: {{ interface_report | length }}"
+          - "In use: {{ interface_report | selectattr('usage', 'equalto', 'In use') | list | length }}"
+          - "Not connected, previously connected: {{ interface_report | selectattr('usage', 'equalto', 'Previously connected') | list | length }}"
+          - "Not connected, never connected: {{ interface_report | selectattr('usage', 'equalto', 'Never connected') | list | length }}"
+          - "Err-disabled: {{ interface_report | selectattr('status', 'equalto', 'err-disabled') | map(attribute='port') | list }}"
+          - "Never connected ports: {{ interface_report | selectattr('usage', 'equalto', 'Never connected') | map(attribute='port') | list }}"
+          - "Previously connected ports: {{ interface_report | selectattr('usage', 'equalto', 'Previously connected') | map(attribute='port') | list }}"
+
+    - name: Show VLAN summary
+      ansible.builtin.debug:
+        var: vlan_report
+
+    - name: Show interface detail
+      ansible.builtin.debug:
+        var: interface_report
+
+    # Exposes the structured report to AAP job artifacts and later workflow nodes.
+    - name: Publish report as job artifact
+      ansible.builtin.set_stats:
+        data:
+          interface_reports:
+            "{{ inventory_hostname }}":
+              vlans: "{{ vlan_report }}"
+              interfaces: "{{ interface_report }}"
+        per_host: false
+        aggregate: true

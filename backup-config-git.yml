@@ -1,0 +1,131 @@
+---
+- name: Collect Cisco IOS running configuration
+  hosts: tags_ios:tags_ios-xe:!tags_scanOmit
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+  vars:
+    ansible_network_os: cisco.ios.ios
+    ansible_network_cli_ssh_type: libssh
+
+  tasks:
+    - name: Collect running configuration
+      cisco.ios.ios_command:
+        commands:
+          - show running-config
+      register: running_config
+      changed_when: false
+
+    # Drop lines that change on every run so git only records real changes.
+    - name: Normalize running configuration
+      ansible.builtin.set_fact:
+        backup_config_text: >-
+          {{ (running_config.stdout[0].splitlines()
+              | reject('match', '^Building configuration')
+              | reject('match', '^Current configuration')
+              | reject('match', '^! Last configuration change')
+              | reject('match', '^! NVRAM config last updated')
+              | reject('match', '^ntp clock-period')
+              | list
+              | join('\n')) + '\n' }}
+
+- name: Commit running configurations to Git
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    # Supplied by an AAP custom credential (injected as env vars) or extra vars.
+    git_repo_url: "{{ lookup('ansible.builtin.env', 'BACKUP_GIT_REPO_URL') }}"
+    git_token: "{{ lookup('ansible.builtin.env', 'BACKUP_GIT_TOKEN') }}"
+    git_branch: main
+    git_backup_dir: configs
+    git_author_name: AAP Config Backup
+    git_author_email: aap-backup@example.com
+    # Hosts that collected successfully in the first play.
+    backed_up_hosts: >-
+      {{ groups['all']
+         | map('extract', hostvars)
+         | selectattr('backup_config_text', 'defined')
+         | map(attribute='inventory_hostname')
+         | list }}
+
+  environment:
+    GIT_TERMINAL_PROMPT: "0"
+    # Passes the token as a header so it never appears in a URL or command line.
+    GIT_CONFIG_COUNT: "1"
+    GIT_CONFIG_KEY_0: http.extraheader
+    GIT_CONFIG_VALUE_0: "Authorization: Basic {{ ('x-access-token:' ~ git_token) | b64encode }}"
+
+  tasks:
+    - name: Validate Git settings
+      ansible.builtin.assert:
+        that:
+          - git_repo_url | length > 0
+          - git_token | length > 0
+        fail_msg: BACKUP_GIT_REPO_URL and BACKUP_GIT_TOKEN must be set.
+      no_log: true
+
+    # Fixed once so every later task (and cleanup) uses the same directory.
+    - name: Choose working directory
+      ansible.builtin.set_fact:
+        git_workdir: "{{ (lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true)) ~ '/config-backup-' ~ lookup('pipe', 'date +%s') }}"
+
+    - name: Skip when no device was collected
+      ansible.builtin.meta: end_play
+      when: backed_up_hosts | length == 0
+
+    - name: Clone backup repository
+      ansible.builtin.git:
+        repo: "{{ git_repo_url }}"
+        dest: "{{ git_workdir }}"
+        version: "{{ git_branch }}"
+      no_log: true
+
+    - name: Ensure backup directory exists
+      ansible.builtin.file:
+        path: "{{ git_workdir }}/{{ git_backup_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write device configurations
+      ansible.builtin.copy:
+        content: "{{ hostvars[item].backup_config_text }}"
+        dest: "{{ git_workdir }}/{{ git_backup_dir }}/{{ item }}.cfg"
+        mode: "0644"
+      loop: "{{ backed_up_hosts }}"
+      no_log: true
+
+    - name: Stage changes
+      ansible.builtin.command:
+        cmd: git add -A {{ git_backup_dir }}
+        chdir: "{{ git_workdir }}"
+      changed_when: false
+
+    - name: Check for changes
+      ansible.builtin.command:
+        cmd: git status --porcelain
+        chdir: "{{ git_workdir }}"
+      register: git_status
+      changed_when: false
+
+    - name: Commit and push changes
+      when: git_status.stdout | length > 0
+      block:
+        - name: Commit configuration changes
+          ansible.builtin.command:
+            cmd: >-
+              git -c user.name="{{ git_author_name }}"
+              -c user.email="{{ git_author_email }}"
+              commit -m "Config backup {{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+            chdir: "{{ git_workdir }}"
+
+        - name: Push to GitHub
+          ansible.builtin.command:
+            cmd: git push origin HEAD:{{ git_branch }}
+            chdir: "{{ git_workdir }}"
+          no_log: true
+
+    - name: Remove working copy
+      ansible.builtin.file:
+        path: "{{ git_workdir }}"
+        state: absent
+      changed_when: false
